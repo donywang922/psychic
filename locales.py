@@ -17,9 +17,10 @@ DEFAULT_LOCALES = {
         "pending_cmd": "待执行",
         "btn_run": "▶ 运行",
         "executing": "正在执行...",
-        "py_done": "Python 脚本执行完成。",
-        "ps_done": "命令行执行完成。",
+        "py_done": "Python开始执行。",
+        "ps_done": "powershell开始执行。",
         "parse_err": "解析出错: ",
+        "exec_err": "错误: ",
 
         "command_lang": "python 或 powershell",
         "command_code": "具体的代码",
@@ -30,9 +31,12 @@ DEFAULT_LOCALES = {
         "read_file_desc": "读取文件内容（支持'.txt', '.csv', '.md', '.py', '.json', '.log', '.ini', '.bat','.docx', '.xlsx', '.xls', '.doc', '.pptx', '.pdf'）",
         "read_file_path_desc": "文件的路径",
 
-        "sys_prompt": """你是一个系统级自动化助手。你需要根据用户选中的文件回答用户的问题或给用户提供一个自动化脚本。
+        "sys_prompt": """你是一个系统级自动化助手。你需要根据用户选中的文件和提问选择如下操作之一，回答用户的问题，给用户提供一个自动化脚本。
         用户系统Windows 11，用户已安装ffmpeg, imagemagick。python环境中存在Pillow。
         除上述明确列出的工具外，绝不允许假设系统装有其他第三方 CLI 工具。
+        你应该优先提供powershell脚本。
+        重要：无论如何都不要重复调用list_dir或read_file，永远假设文件不会变化，永远相信之前的调用结果！
+        重要：如果调用返回了错误，不要再次尝试调用，因为文件永远不会变化，下次调用的结果不会改变！
         用户选中的文件[{files}]"""
     },
     "en": {

@@ -1,10 +1,9 @@
-import contextlib
 import ctypes
-import io
 import os
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import tkinter as tk
 from tkinter import scrolledtext, messagebox
@@ -16,9 +15,22 @@ from pydantic import BaseModel, Field
 
 from locales import DEFAULT_LOCALES
 
+def get_app_dir():
+    """获取程序的真实所在目录（完美兼容 PyInstaller 单文件打包和 py 源码运行）"""
+    if getattr(sys, 'frozen', False):
+        # 如果是 PyInstaller 打包后的 exe
+        return os.path.dirname(sys.executable)
+    else:
+        # 如果是直接运行的 .py 脚本
+        return os.path.dirname(os.path.abspath(__file__))
+
+APP_DIR = get_app_dir()
+
 # --- 1. 全局配置与默认文件生成 ---
 IPC_PORT = 14514
-API_KEY_FILE = "api_key.txt"
+
+# 将相对路径强行绑定到程序所在的绝对路径上
+API_KEY_FILE = os.path.join(APP_DIR, "api_key.txt")
 
 style_config = {
     "bg_main": "#fcfcfc",  # 纯净主背景
@@ -152,24 +164,46 @@ class Gemini:
         )
 
     def call(self, contents):
+        # return Response(lang='powershell', code='echo "1"', description='123')
         response = self.generate_content(contents=contents)
-        while tool_call := response.candidates[0].content.parts[0].function_call:
-            self.logger(f"Function to call: {tool_call.name}", tag="gray")
-            self.logger(f"Arguments: {tool_call.args}", tag="gray")
-            if tool_call.name == "list_dir":
-                result = tool_list_dir(**tool_call.args)
-            elif tool_call.name == "read_file":
-                result = tool_read_file(**tool_call.args)
-            else:
-                result = t("unknown_function")
-            self.logger(f"Function execution result: {str(result)[:100]}...", tag="gray")
-            function_response_part = types.Part.from_function_response(
-                name=str(tool_call.name),
-                response={"result": str(result)},
-            )
+
+        # 【修复1】使用 any() 检查 response 的所有 parts 中是否包含任意一个 function_call
+        while any(part.function_call for part in response.candidates[0].content.parts):
+            function_responses = []
+
+            # 遍历所有的 parts，完美处理模型的并发调用 (Parallel Tool Calling)
+            for part in response.candidates[0].content.parts:
+                if tool_call := part.function_call:
+                    self.logger(f"Function to call: {tool_call.name}", tag="gray")
+                    self.logger(f"Arguments: {tool_call.args}", tag="gray")
+
+                    if tool_call.name == "list_dir":
+                        result = tool_list_dir(**tool_call.args)
+                    elif tool_call.name == "read_file":
+                        result = tool_read_file(**tool_call.args)
+                    else:
+                        result = t("unknown_function")
+
+                    # 【修复2】强制将结果转为字符串！防止 Exception 对象导致 JSON 序列化丢失，让 AI 变成瞎子
+                    res_str = str(result)
+                    self.logger(f"Function execution result: {res_str[:100]}...", tag="gray")
+
+                    function_responses.append(
+                        types.Part.from_function_response(
+                            name=str(tool_call.name),
+                            response={"result": res_str},
+                        )
+                    )
+
+            # 将 AI 的所有并发调用请求打包进历史
             contents.append(response.candidates[0].content)
-            contents.append(types.Content(role="user", parts=[function_response_part]))
+            # 将所有的工具执行结果打包成一个完整的 User 回合返回给 AI
+            contents.append(types.Content(role="user", parts=function_responses))
+
+            # 带着结果再次请求大模型
             response = self.generate_content(contents=contents)
+
+        # 循环结束，确信模型已经给出了最终的 JSON 文本回复
         contents.append(response.candidates[0].content)
         return Response.model_validate_json(response.text)
 
@@ -297,13 +331,9 @@ class AgentGUI:
         self.root.attributes("-topmost", True)
         self.root.configure(bg=style_config["bg_main"])
 
-        # --- 无边框窗口的拖拽实现 ---
-        self.root.bind("<ButtonPress-1>", self.start_drag)
-        self.root.bind("<B1-Motion>", self.do_drag)
-
         # 全局最外层 Padding 容器
         self.main_container = tk.Frame(self.root, bg=style_config["bg_main"])
-        self.main_container.pack(fill='both', expand=True, padx=10, pady=5)
+        self.main_container.pack(fill='both', expand=True, padx=5, pady=5)
 
         # 1. 顶部栏 (文件引用 + 关闭按钮)
         top_bar = tk.Frame(self.main_container, bg=style_config["bg_main"])
@@ -315,6 +345,11 @@ class AgentGUI:
                                   fg=style_config["fg_gray"],
                                   bg=style_config["bg_main"], anchor="w")
         self.lbl_paths.pack(side='left', fill='x', expand=True)
+
+        top_bar.bind("<ButtonPress-1>", self.start_drag)
+        top_bar.bind("<B1-Motion>", self.do_drag)
+        self.lbl_paths.bind("<ButtonPress-1>", self.start_drag)
+        self.lbl_paths.bind("<B1-Motion>", self.do_drag)
 
         # 扁平化关闭按钮 (鼠标悬停变红)
         self.btn_close = tk.Label(top_bar, text=" × ", font=("Arial", 14, "bold"),
@@ -379,23 +414,23 @@ class AgentGUI:
         readable_exts = ('.txt', '.csv', '.md', '.py', '.json', '.log', '.ini', '.bat',
                          '.docx', '.xlsx', '.xls', '.doc', '.pptx', '.pdf')
 
-        def fake_read(files):
-            text_files = [f for f in files if isinstance(f, str) and f.lower().endswith(readable_exts)]
-            if len(text_files) == 1:
-                file_path = os.path.join(folder_path, text_files[0])
-                content = tool_read_file(file_path)
-                fake_call(content, {'path': file_path}, 'read_file', self.chat_history)
-
         # --- 情景 1：只选中了一个目标，且它是文件夹 ---
         if len(self.target_paths) == 1 and os.path.isdir(self.target_paths[0]):
             folder_path = self.target_paths[0]
             items = tool_list_dir(folder_path)
             fake_call(items, {'path': folder_path}, 'list_dir', self.chat_history)
             if not isinstance(items, Exception):
-                fake_read(items)
+                text_files = [f for f in items if isinstance(f, str) and f.lower().endswith(readable_exts)]
+                if len(text_files) == 1:
+                    file_path = os.path.join(folder_path, text_files[0])
+                    content = tool_read_file(file_path)
+                    fake_call(content, {'path': file_path}, 'read_file', self.chat_history)
 
         else:
-            fake_read(self.target_paths)
+            text_files = [f for f in self.target_paths if isinstance(f, str) and f.lower().endswith(readable_exts)]
+            if len(text_files) == 1:
+                content = tool_read_file(text_files[0])
+                fake_call(content, {'path': text_files}, 'read_file', self.chat_history)
 
     def expand_window(self):
         """规则 9: 回车后窗口平滑展开"""
@@ -445,56 +480,66 @@ class AgentGUI:
             self.root.after(0, self.log_msg, f"API Error: {e}")
 
     def handle_ai_response(self, response: Response):
-
         desc, code, lang_type = response.description, response.code, response.lang
         if desc: self.log_msg(desc, tag="ai")
-        if lang_type:
-            self.cmd_panel.pack(fill=tk.X, pady=(style_config["pady"], 0), padx=style_config["padx"] // 2)
-            lbl = tk.Label(self.cmd_panel, text=f"{t('pending_cmd')} ({lang_type}):",
-                           bg=style_config["bg_cmd"], font=style_config["font_bold"])
-            lbl.pack(anchor="w", padx=5, pady=(5, 0))
-        if code:
-            txt_cmd = scrolledtext.ScrolledText(self.cmd_panel, height=4,
-                                                font=style_config["font_cmd"],
-                                                bg="#1e1e1e", fg="#569cd6",  # 代码配色
-                                                relief="flat", borderwidth=0)
-            txt_cmd.insert(tk.END, code)
-            txt_cmd.pack(fill='x', padx=5, pady=5)
 
-            btn_run = tk.Button(self.cmd_panel, text=t("btn_run"),
-                                bg=style_config["primary"], fg="white",
-                                font=style_config["font_bold"],
-                                relief="flat", activebackground="#218838", cursor="hand2")
-            btn_run.pack(anchor="e", padx=5, pady=(0, 5))
-            btn_run.config(command=lambda: self.execute_code(txt_cmd.get("1.0", tk.END).strip(), lang_type))
+        if code or lang_type:
+            self.cmd_panel.pack(fill=tk.X, pady=style_config["pady"])
+
+            # 1. 创建一个顶部标题栏容器
+            header_frame = tk.Frame(self.cmd_panel, bg=style_config["bg_cmd"])
+            header_frame.pack(fill='x', padx=5, pady=(5, 0))
+
+            # 2. 标签放左边
+            if lang_type:
+                lbl = tk.Label(header_frame, text=f"{t('pending_cmd')} ({lang_type}):",
+                               bg=style_config["bg_cmd"], font=style_config["font_bold"])
+                lbl.pack(side='left')
+
+            # 3. 按钮放右边 (和标签在同一行)
+            if code:
+                btn_run = tk.Button(header_frame, text=t("btn_run"),
+                                    bg=style_config["primary"], fg="white",
+                                    font=style_config["font_bold"],
+                                    relief="flat", activebackground="#218838", cursor="hand2")
+                btn_run.pack(side='right')
+
+                # 4. 代码框放在最下面
+                txt_cmd = scrolledtext.ScrolledText(self.cmd_panel, height=6,
+                                                    font=style_config["font_cmd"],
+                                                    bg="#1e1e1e", fg="#569cd6",  # 代码配色
+                                                    relief="flat", borderwidth=0)
+                txt_cmd.insert(tk.END, code)
+                txt_cmd.pack(fill='x', padx=5, pady=5)
+
+                btn_run.config(command=lambda: self.execute_code(txt_cmd.get("1.0", tk.END).strip(), lang_type))
 
     def execute_code(self, code, lang_type):
-        self.log_msg(t("executing"), tag="exec")
         try:
             if lang_type.lower() == "python":
-                # 创建内存字符串流
-                f_out = io.StringIO()
-                f_err = io.StringIO()
+                # 创建一个安全的临时 Python 文件
+                fd, temp_path = tempfile.mkstemp(suffix=".py")
+                with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                    # 注入代码，并在末尾加上暂停，防止执行完控制台秒退
+                    f.write(code + "\n\nimport os\nos.system('pause')")
 
-                # 上下文管理器拦截 print() 输出
-                with contextlib.redirect_stdout(f_out), contextlib.redirect_stderr(f_err):
-                    exec(code, globals())
-
-                # 获取拦截到的输出并展示在 UI
-                stdout_str = f_out.getvalue().strip()
-                stderr_str = f_err.getvalue().strip()
-
-                if stdout_str:
-                    self.log_msg(stdout_str)
-                if stderr_str:
-                    self.log_msg(stderr_str, tag="error")
-
+                # 0x00000010 是 Windows 的 CREATE_NEW_CONSOLE 标志位
+                subprocess.Popen(["python", temp_path], creationflags=subprocess.CREATE_NEW_CONSOLE)
                 self.log_msg(t("py_done"), tag="exec")
+
             else:
-                result = subprocess.run(["powershell", "-Command", code], capture_output=True, text=True)
-                if result.stdout: self.log_msg(result.stdout)
-                if result.stderr: self.log_msg(result.stderr, tag="error")
+                # 创建一个安全的临时 PowerShell 文件
+                fd, temp_path = tempfile.mkstemp(suffix=".ps1")
+                # 注意：PowerShell 脚本最好使用 utf-8-sig (BOM) 防止中文乱码
+                with os.fdopen(fd, 'w', encoding='utf-8-sig') as f:
+                    f.write(code + "\n\nRead-Host -Prompt '按回车键退出...'")
+
+                subprocess.Popen(
+                    ["powershell", "-ExecutionPolicy", "Bypass", "-File", temp_path],
+                    creationflags=subprocess.CREATE_NEW_CONSOLE
+                )
                 self.log_msg(t("ps_done"), tag="exec")
+
         except Exception as e:
             messagebox.showerror(t("exec_err"), str(e))
 
