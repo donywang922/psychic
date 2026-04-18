@@ -22,8 +22,8 @@ DEFAULT_LOCALES = {
         "parse_err": "解析出错: ",
         "exec_err": "错误: ",
 
-        "command_lang": "python 或 powershell 或 留空",
-        "command_code": "脚本代码 或 留空",
+        "command_lang": "留空 或 python 或 powershell",
+        "command_code": "留空 或 脚本代码 ",
         "command_description": "回答用户的问题或简短描述代码",
 
         "list_dir_desc": "列出目录下的文件（不递归）**注意，此命令占用较大，不要重复执行**",

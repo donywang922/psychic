@@ -565,17 +565,15 @@ class AgentGUI(QWidget):
         desc, code, lang_type = response.description, response.code, response.lang
         if desc:
             self.append_log(desc, tag="ai")
-        if code or lang_type:
+        if code and lang_type:
             self.cmd_panel.show()
-            if lang_type:
-                self.lbl_cmd_type.setText(f"{t('pending_cmd')} ({lang_type}):")
-            if code:
-                self.txt_cmd.setPlainText(code)
-                try:
-                    self.btn_run.clicked.disconnect()
-                except RuntimeError:
-                    pass
-                self.btn_run.clicked.connect(lambda: self.execute_code(self.txt_cmd.toPlainText().strip(), lang_type))
+            self.lbl_cmd_type.setText(f"{t('pending_cmd')} ({lang_type}):")
+            self.txt_cmd.setPlainText(code)
+            try:
+                self.btn_run.clicked.disconnect()
+            except RuntimeError:
+                pass
+            self.btn_run.clicked.connect(lambda: self.execute_code(self.txt_cmd.toPlainText().strip(), lang_type))
 
     def execute_code(self, code, lang_type):
         try:
