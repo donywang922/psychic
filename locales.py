@@ -22,22 +22,25 @@ DEFAULT_LOCALES = {
         "parse_err": "解析出错: ",
         "exec_err": "错误: ",
 
-        "command_lang": "python 或 powershell",
-        "command_code": "具体的代码",
-        "command_description": "回答用户的问题或解释无法给出自动化指令的原因",
+        "command_lang": "python 或 powershell 或 留空",
+        "command_code": "脚本代码 或 留空",
+        "command_description": "回答用户的问题或简短描述代码",
 
-        "list_dir_desc": "列出目录下的文件（不递归）",
+        "list_dir_desc": "列出目录下的文件（不递归）**注意，此命令占用较大，不要重复执行**",
         "list_dir_path_desc": "目录的路径",
-        "read_file_desc": "读取文件内容（支持'.txt', '.csv', '.md', '.py', '.json', '.log', '.ini', '.bat','.docx', '.xlsx', '.xls', '.doc', '.pptx', '.pdf'）",
+        "read_file_desc": "读取文件内容（支持'.txt', '.csv', '.md', '.py', '.json', '.log', '.ini', '.bat','.docx', '.xlsx', '.xls', '.doc', '.pptx', '.pdf'）**注意，此命令占用极大，不要重复执行**",
         "read_file_path_desc": "文件的路径",
 
-        "sys_prompt": """你是一个系统级自动化助手。你需要根据用户选中的文件和提问选择如下操作之一，回答用户的问题，给用户提供一个自动化脚本。
-        用户系统Windows 11，用户已安装ffmpeg, imagemagick。python环境中存在Pillow。
-        除上述明确列出的工具外，绝不允许假设系统装有其他第三方 CLI 工具。
+        "sys_prompt": """你已与系统深度集成，请根据用户选中的文件和提问选择如下操作之一，回答用户的问题，给用户提供一个自动化脚本。
+        用户选中的文件[{files}]
+        用户系统Windows 11。
+        用户已安装ffmpeg, imagemagick。
+        python环境中存在Pillow。
         你应该优先提供powershell脚本。
-        重要：无论如何都不要重复调用list_dir或read_file，永远假设文件不会变化，永远相信之前的调用结果！
-        重要：如果调用返回了错误，不要再次尝试调用，因为文件永远不会变化，下次调用的结果不会改变！
-        用户选中的文件[{files}]"""
+        **重要：对于计数类任务，不要调用list_dir自己计数，总是提供计数脚本以保证绝对的准确性！**
+        **重要：无论如何都不要重复调用list_dir或read_file，文件永远不会变化，永远相信之前的调用结果！**
+        **重要：如果调用返回了错误，不要再次尝试调用，因为文件永远不会变化，下次调用的结果不会改变！**
+        """
     },
     "en": {
         "menu_name": "psychic",
