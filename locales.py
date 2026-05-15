@@ -34,10 +34,10 @@ DEFAULT_LOCALES = {
         "sys_prompt": """你已与系统深度集成，请根据用户选中的文件和提问选择如下操作之一，回答用户的问题，给用户提供一个自动化脚本。
         用户选中的文件[{files}]
         用户系统Windows 11。
-        用户已安装ffmpeg, imagemagick。
+        用户已安装ffmpeg，imagemagick，Sound eXchange，yt-dlp。
         python环境中存在Pillow。
         你应该优先提供powershell脚本。
-        **重要：对于计数类任务，不要调用list_dir自己计数，总是提供计数脚本以保证绝对的准确性！**
+        **重要：对于计数类任务如"这里有多少图片"，不要调用list_dir！这会占用大量电脑性能甚至卡死！直接提供计数脚本以保证性能和绝对的准确性！**
         **重要：无论如何都不要重复调用list_dir或read_file，文件永远不会变化，永远相信之前的调用结果！**
         **重要：如果调用返回了错误，不要再次尝试调用，因为文件永远不会变化，下次调用的结果不会改变！**
         """
@@ -58,27 +58,31 @@ DEFAULT_LOCALES = {
         "ai_trying": "trying to call: ",
         "ai_explains": "AI: ",
         "pending_cmd": "Pending",
-        "btn_run": "▶ Run Command",
+        "btn_run": "▶ Run",
         "executing": "Executing...",
-        "py_done": "Python script execution finished.",
-        "ps_done": "Command line execution finished.",
-        "parse_err": "AI response parsing error: ",
-        "exec_err": "Execution Exception",
-        "read_mock": "Tool read_file executed. First 20 lines of {file}:\n{content}",
-        "read_ack": "Received. I understand the file content.",
+        "py_done": "Python execution started.",
+        "ps_done": "Powershell execution started.",
+        "parse_err": "Parsing error: ",
+        "exec_err": "Error: ",
 
-        # --- AI Prompts (English) ---
-        "init_trigger": "Please analyze the target paths and prepare for instructions.",
-        "tool_dir_res": "System returned tool execution result:\nDirectory preview: {items}",
-        "tool_file_res": "System returned tool execution result:\nFile content preview:\n{content}",
-        "tool_unk_res": "System returned tool execution result:\nUnknown tool: {name}",
-        "tool_err_res": "System returned tool execution result:\nTool execution failed, error: {err}",
-        "sys_prompt": """You are a system-level automation assistant.
-Current target paths selected by the user: {paths}
+        "command_lang": "Leave empty or 'python' or 'powershell'",
+        "command_code": "Leave empty or script code",
+        "command_description": "Answer user's question or briefly describe the code",
 
-You MUST strictly return a pure JSON object, without markdown tags. The format MUST be one of the following:
-1. Call tool (to explore env): {{"type": "tool", "name": "list_directory" or "read_file", "path": "absolute path"}}
-2. Generate command (when ready): {{"type": "command", "lang": "python" or "powershell", "code": "executable code", "desc": "short explanation in English"}}
-3. Cannot execute (beyond capability): {{"type": "explain", "text": "detailed explanation in English why it cannot be done"}}"""
+        "list_dir_desc": "List files in directory (non-recursive). **Note: High resource usage, do not repeat execution**",
+        "list_dir_path_desc": "Path of the directory",
+        "read_file_desc": "Read file content (supports '.txt', '.csv', '.md', '.py', '.json', '.log', '.ini', '.bat','.docx', '.xlsx', '.xls', '.doc', '.pptx', '.pdf'). **Note: Extremely high resource usage, do not repeat execution**",
+        "read_file_path_desc": "Path of the file",
+
+        "sys_prompt": """You are deeply integrated with the system. Based on the files selected by the user and their queries, choose one of the following operations to answer the question or provide an automation script.
+        Selected files: [{files}]
+        OS: Windows 11.
+        Installed tools: ffmpeg, imagemagick, Sound eXchange, yt-dlp.
+        Python environment: Pillow is available.
+        Preference: You should prioritize providing PowerShell scripts.
+        **IMPORTANT: For counting tasks (e.g., 'how many images are here'), DO NOT call list_dir! This consumes significant resources. Provide a counting script directly for performance and absolute accuracy!**
+        **IMPORTANT: Never repeat list_dir or read_file calls. Files will not change; always trust previous results!**
+        **IMPORTANT: If a call returns an error, do not retry. The file state is static, and subsequent calls will yield the same result!**
+        """
     }
 }

@@ -216,7 +216,7 @@ class Gemini:
     def __init__(self, files, log_callback):
         self.log_callback = log_callback
         current_key = load_environment()
-        self.model_name = "gemini-3.1-flash-lite-preview"
+        self.model_name = "gemini-3.1-flash-lite"
 
         if "|" in current_key:
             parts = current_key.split("|")
