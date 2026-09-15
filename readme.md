@@ -158,6 +158,31 @@ AI 返回脚本时，界面会显示脚本和运行按钮。可以先修改脚�
 
 “轻量”目前主要指按需启动和不常驻，安装体积仍有优化空间：本机验证的目录约 297 MiB，包含 Qt 界面和文档解析依赖，实际大小随依赖版本变化。
 
+## GitHub Actions 自动发布
+
+仓库提供 `.github/workflows/release.yml`，在 GitHub 的 Windows x64 runner 上使用 Python 3.14 和 PyInstaller 6.19.0 打包。不需要配置 DeepSeek 密钥或个人访问令牌；Release 使用 GitHub 自动提供的 `GITHUB_TOKEN`。
+
+### 发布正式版本
+
+先将源码、`deepseek.spec` 和工作流提交并推送到 GitHub，再在需要发布的提交上创建版本标签。例如（请换成尚未使用的版本号）：
+
+```powershell
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+推送 `v` 开头的标签后，工作流会检查源码启动、构建程序、生成 ZIP 和 SHA-256 校验文件，并创建 GitHub Release。`v1.0.0-beta.1` 等带连字符的标签会标记为预发布。已有同名 Release 时，不覆盖其附件；发布更新请使用新版本标签。
+
+在仓库的 **Actions → Build Windows Release** 查看进度，完成后从 **Releases** 下载 `psychic-版本号-windows-x64.zip`，解压整个目录使用。
+
+### 手动试打包
+
+工作流进入默认分支后，在 **Actions → Build Windows Release → Run workflow** 选择分支并运行。手动运行仅生成构建产物，不创建 Release。完成后下载页面底部的 `windows-x64` artifact，里面包含程序 ZIP 和校验文件；artifact 保留 14 天。
+
+发布包包含 `api_key.example.txt`，使用者需将其复制或重命名为 `api_key.txt` 并填写自己的密钥。工作流不复制本机配置，且发现打包目录中包含 `api_key.txt` 时会中止发布。
+
+自动检查目前覆盖源码的无屏幕渲染启动和打包产物结构，不调用真实 API，也不代替 Windows 11 上的右键菜单、窗口交互测试。安装依赖使用 `requirements.txt` 中的版本范围，不同时间构建的依赖版本和包大小可能变化。
+
 ## 启动性能验证
 
 ```powershell
@@ -199,5 +224,6 @@ locales.py              # 中英文界面文字与系统提示词
 requirements.txt        # 运行依赖
 benchmark\_startup.py    # 无屏幕渲染启动测试
 deepseek.spec           # PyInstaller 目录打包配置
+.github/workflows/release.yml  # GitHub Actions 构建及 Release 发布
 ```
 

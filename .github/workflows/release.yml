@@ -1,0 +1,112 @@
+name: Build Windows Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+          architecture: x64
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install -r requirements.txt pyinstaller==6.19.0
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed' }
+
+      - name: Check source startup
+        run: |
+          python benchmark_startup.py
+          if ($LASTEXITCODE -ne 0) { throw 'Startup check failed' }
+
+      - name: Build executable
+        run: |
+          python -m PyInstaller deepseek.spec --distpath dist/deepseek --workpath build/deepseek --noconfirm
+          if ($LASTEXITCODE -ne 0) { throw 'PyInstaller failed' }
+
+      - name: Package ZIP and checksum
+        env:
+          BUILD_REF_TYPE: ${{ github.ref_type }}
+          BUILD_REF_NAME: ${{ github.ref_name }}
+          BUILD_SHA: ${{ github.sha }}
+        run: |
+          $packageDir = Join-Path $PWD 'dist/deepseek/psychic'
+          if (!(Test-Path -LiteralPath "$packageDir/psychic.exe")) { throw 'Executable missing' }
+          if (!(Test-Path -LiteralPath "$packageDir/_internal")) { throw 'Runtime directory missing' }
+          if (Get-ChildItem -LiteralPath $packageDir -Recurse -File -Filter api_key.txt) {
+            throw 'Refusing to publish a package containing api_key.txt'
+          }
+          Copy-Item -LiteralPath readme.md -Destination "$packageDir/README.md"
+          Set-Content -LiteralPath "$packageDir/api_key.example.txt" -Value 'YOUR_DEEPSEEK_API_KEY_HERE|deepseek-flash' -Encoding utf8
+          $version = if ($env:BUILD_REF_TYPE -eq 'tag') { $env:BUILD_REF_NAME } else { $env:BUILD_SHA.Substring(0, 7) }
+          $version = $version -replace '[^a-zA-Z0-9._-]', '-'
+          $archiveName = "psychic-$version-windows-x64.zip"
+          New-Item -ItemType Directory -Path release-assets -Force | Out-Null
+          $archivePath = Join-Path $PWD "release-assets/$archiveName"
+          Compress-Archive -LiteralPath $packageDir -DestinationPath $archivePath -CompressionLevel Optimal
+          $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -LiteralPath "$archivePath.sha256" -Value "$hash  $archiveName" -Encoding ascii
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: release-assets/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-x64
+          path: release-assets
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; leaving its assets unchanged."
+            exit 0
+          fi
+          flags=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" release-assets/* \
+            --verify-tag --generate-notes --title "$RELEASE_TAG" "${flags[@]}"
