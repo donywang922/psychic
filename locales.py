@@ -1,5 +1,7 @@
 DEFAULT_LOCALES = {
     "zh": {
+        "missing_api_key": "请设置 DEEPSEEK_API_KEY 环境变量，或在 api_key.txt 中填入 DeepSeek API 密钥（原 Gemini 密钥不可用）。",
+        "tool_limit": "工具调用次数超出限制，请缩小问题范围后重试。",
         "menu_name": "通灵",
         "setup_title": "通灵",
         'start_hint': "右键任意文件或文件夹以开始",
@@ -43,6 +45,8 @@ DEFAULT_LOCALES = {
         """
     },
     "en": {
+        "missing_api_key": "Set DEEPSEEK_API_KEY or enter a DeepSeek API key in api_key.txt. Gemini keys are not supported.",
+        "tool_limit": "Tool call limit reached. Please narrow your request and retry.",
         "menu_name": "psychic",
         "setup_title": "psychic",
         'start_hint': "Right-click any file or folder to start",

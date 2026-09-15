@@ -3,3 +3,5 @@
 /build/
 /.venv/
 /psychic.spec
+__pycache__/
+*.pyc

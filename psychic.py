@@ -1,21 +1,18 @@
 import ctypes
+import json
+import uuid
 import os
 import socket
 import subprocess
 import sys
 import tempfile
 import threading
-from typing import Optional
 
-from PySide6.QtCore import Qt, Signal, QObject, QPoint
-from PySide6.QtGui import QCursor, QFont, QTextCursor
+from PySide6.QtCore import Qt, Signal, QObject
+from PySide6.QtGui import QCursor, QTextCursor
 from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                                QLabel, QPushButton, QTextBrowser, QTextEdit,
                                QLineEdit, QFrame, QMessageBox)
-
-from google import genai
-from google.genai import types
-from pydantic import BaseModel, Field
 
 from locales import DEFAULT_LOCALES
 
@@ -144,11 +141,15 @@ class LangManager:
 
 
 def load_environment():
-    if not os.path.exists(API_KEY_FILE):
-        with open(API_KEY_FILE, "w", encoding="utf-8") as f:
-            f.write("YOUR_GEMINI_API_KEY_HERE")
-    with open(API_KEY_FILE, "r", encoding="utf-8") as f:
-        key = f.read().strip()
+    key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    if not key:
+        if not os.path.exists(API_KEY_FILE):
+            with open(API_KEY_FILE, "w", encoding="utf-8") as f:
+                f.write("YOUR_DEEPSEEK_API_KEY_HERE")
+        with open(API_KEY_FILE, "r", encoding="utf-8") as f:
+            key = f.read().strip()
+    if not key or key.startswith("YOUR_"):
+        raise ValueError(t("missing_api_key"))
     return key
 
 
@@ -156,21 +157,17 @@ lang = LangManager(DEFAULT_LOCALES)
 t = lang.get
 
 
-class Response(BaseModel):
-    lang: Optional[str] = Field(description=t('command_lang'))
-    code: Optional[str] = Field(description=t('command_code'))
-    description: Optional[str] = Field(description=t('command_description'))
+def create_response_model():
+    # Only needed after the first message; keep validation imports off the startup path.
+    from typing import Optional
+    from pydantic import BaseModel, Field
 
+    class Response(BaseModel):
+        lang: Optional[str] = Field(description=t('command_lang'))
+        code: Optional[str] = Field(description=t('command_code'))
+        description: Optional[str] = Field(description=t('command_description'))
 
-class Explain(BaseModel):
-    text: str = Field(description=t('explain_text'))
-
-
-list_dir = types.FunctionDeclaration(name="list_dir", description=t('list_dir_desc'),
-                                     parameters=types.Schema(type=types.Type.OBJECT, properties={
-                                         "path": types.Schema(type=types.Type.STRING,
-                                                              description=t('list_dir_path_desc')),
-                                     }))
+    return Response
 
 
 def tool_list_dir(path):
@@ -178,13 +175,6 @@ def tool_list_dir(path):
         return os.listdir(path)[:50]
     except Exception as e:
         return e
-
-
-read_file = types.FunctionDeclaration(name="read_file", description=t('read_file_desc'),
-                                      parameters=types.Schema(type=types.Type.OBJECT, properties={
-                                          "path": types.Schema(type=types.Type.STRING,
-                                                               description=t('read_file_path_desc')),
-                                      }))
 
 
 def tool_read_file(path):
@@ -210,70 +200,71 @@ class AppSignals(QObject):
     log = Signal(str, str)
     response = Signal(object)
     new_path = Signal(str)
+    finished = Signal()
 
 
-class Gemini:
+class DeepSeek:
     def __init__(self, files, log_callback):
+        from openai import OpenAI
+
+        self.response_model = create_response_model()
         self.log_callback = log_callback
-        current_key = load_environment()
-        self.model_name = "gemini-3.1-flash-lite"
-
-        if "|" in current_key:
-            parts = current_key.split("|")
-            current_key = parts[0].strip()
-            self.model_name = parts[1].strip()
-
-        self.gemini = genai.Client(api_key=current_key)
-        tools = types.Tool(function_declarations=[list_dir, read_file])
-        self.config = types.GenerateContentConfig(
-            tools=[tools],
-            system_instruction=t("sys_prompt", files=files),
-            response_json_schema=Response.model_json_schema()
+        key, _, configured_model = load_environment().partition("|")
+        self.model_name = os.environ.get("DEEPSEEK_MODEL", "").strip() or configured_model.strip() or "deepseek-flash"
+        self.client = OpenAI(api_key=key.strip(), base_url="https://api.deepseek.com",
+                             timeout=120.0, max_retries=1)
+        self.system_prompt = t("sys_prompt", files=files) + (
+            '\nReturn a JSON object matching this schema for your final answer: '
+            + json.dumps(self.response_model.model_json_schema(), ensure_ascii=False)
+            + '\nExample: {"lang": null, "code": null, "description": "Hello"}'
         )
-
-    def generate_content(self, contents):
-        return self.gemini.models.generate_content(
-            model=self.model_name,
-            contents=contents,
-            config=self.config,
-        )
+        self.tools = [
+            {"type": "function", "function": {
+                "name": name, "description": t(name + "_desc"),
+                "parameters": {"type": "object", "properties": {
+                    "path": {"type": "string", "description": t(name + "_path_desc")}
+                }, "required": ["path"], "additionalProperties": False}
+            }} for name in ("list_dir", "read_file")
+        ]
 
     def call(self, contents):
-        response = self.generate_content(contents=contents)
-        while any(part.function_call for part in response.candidates[0].content.parts):
-            function_responses = []
-            for part in response.candidates[0].content.parts:
-                if tool_call := part.function_call:
-                    self.log_callback(f"Function to call: {tool_call.name}", "gray")
-                    self.log_callback(f"Arguments: {tool_call.args}", "gray")
-
-                    if tool_call.name == "list_dir":
-                        result = tool_list_dir(**tool_call.args)
-                    elif tool_call.name == "read_file":
-                        result = tool_read_file(**tool_call.args)
-                    else:
-                        result = t("unknown_function")
-
-                    res_str = str(result)
-                    self.log_callback(f"Function execution result: {res_str[:100]}...", "gray")
-                    function_responses.append(
-                        types.Part.from_function_response(name=str(tool_call.name), response={"result": res_str})
-                    )
-            contents.append(response.candidates[0].content)
-            contents.append(types.Content(role="user", parts=function_responses))
-            response = self.generate_content(contents=contents)
-
-        contents.append(response.candidates[0].content)
-        return Response.model_validate_json(response.text)
+        # Commit history only after a valid final answer, so failed requests can be retried.
+        messages = [{"role": "system", "content": self.system_prompt}, *contents]
+        for _ in range(16):
+            response = self.client.chat.completions.create(
+                model=self.model_name, messages=messages, tools=self.tools,
+                response_format={"type": "json_object"},
+                extra_body={"thinking": {"type": "disabled"}},
+            )
+            message = response.choices[0].message
+            if not message.tool_calls:
+                result = self.response_model.model_validate_json(message.content or "")
+                messages.append({"role": "assistant", "content": message.content})
+                contents[:] = messages[1:]
+                return result
+            messages.append(message.model_dump(exclude_none=True))
+            for call in message.tool_calls:
+                name = call.function.name
+                self.log_callback(f"Function to call: {name}", "gray")
+                try:
+                    args = json.loads(call.function.arguments)
+                    function = {"list_dir": tool_list_dir, "read_file": tool_read_file}.get(name)
+                    result = function(**args) if function else t("unknown_function")
+                except Exception as e:
+                    result = str(e)
+                self.log_callback(f"Function execution result: {str(result)[:100]}...", "gray")
+                messages.append({"role": "tool", "tool_call_id": call.id, "content": str(result)})
+        raise RuntimeError(t("tool_limit"))
 
 
 def fake_call(result, agr, name, content):
-    content.append(types.Content(role="model", parts=[types.Part(
-        function_call=types.FunctionCall(name=name, args=agr),
-        thought_signature=b"context_engineering_is_the_way_to_go"
-    )]))
-    function_response_part = types.Part.from_function_response(name=name, response={"result": str(result)})
-    content.append(types.Content(role="user", parts=[function_response_part]))
+    call_id = "call_" + uuid.uuid4().hex
+    content.append({"role": "assistant", "content": None, "tool_calls": [{
+        "id": call_id, "type": "function", "function": {
+            "name": name, "arguments": json.dumps(agr, ensure_ascii=False)
+        }
+    }]})
+    content.append({"role": "tool", "tool_call_id": call_id, "content": str(result)})
 
 
 # --- PySide6 Setup Window (Menu Manager) ---
@@ -360,6 +351,8 @@ class SetupWindow(QWidget):
                     winreg.DeleteKey(winreg.HKEY_CURRENT_USER, base_path)
                 else:
                     command_string = f'"{exe_path}" "{arg}"'
+                    if not getattr(sys, 'frozen', False):
+                        command_string = f'"{sys.executable}" "{exe_path}" "{arg}"'
                     with winreg.CreateKey(winreg.HKEY_CURRENT_USER, base_path) as key:
                         winreg.SetValue(key, "", winreg.REG_SZ, t("menu_name"))
                         winreg.SetValueEx(key, "Icon", 0, winreg.REG_SZ, "shell32.dll,43")
@@ -377,13 +370,14 @@ class AgentGUI(QWidget):
         super().__init__()
         self.target_paths = target_paths
         self.chat_history = []
-        self.gemini = None
+        self.deepseek = None
         self.drag_pos = None
 
         self.signals = AppSignals()
         self.signals.log.connect(self.append_log)
         self.signals.response.connect(self.handle_ai_response)
         self.signals.new_path.connect(self.add_path)
+        self.signals.finished.connect(lambda: self.entry.setEnabled(True))
 
         self.setup_ui()
         self.position_window()
@@ -422,7 +416,16 @@ class AgentGUI(QWidget):
         top_layout.addWidget(self.btn_close)
         main_layout.addWidget(top_bar)
 
-        # 2. 扩展区 (初始隐藏)
+        # Build the larger conversation widgets only when they are needed.
+        self.expand_widget = None
+
+        # 3. 输入区
+        self.entry = QLineEdit()
+        self.entry.setPlaceholderText("Enter command...")
+        self.entry.returnPressed.connect(self.on_enter)
+        main_layout.addWidget(self.entry)
+
+    def setup_conversation_ui(self):
         self.expand_widget = QWidget()
         expand_layout = QVBoxLayout(self.expand_widget)
         expand_layout.setContentsMargins(0, 0, 0, 0)
@@ -462,13 +465,7 @@ class AgentGUI(QWidget):
         expand_layout.addWidget(self.cmd_panel)
 
         self.expand_widget.hide()
-        main_layout.addWidget(self.expand_widget)
-
-        # 3. 输入区
-        self.entry = QLineEdit()
-        self.entry.setPlaceholderText("Enter command...")
-        self.entry.returnPressed.connect(self.on_enter)
-        main_layout.addWidget(self.entry)
+        self.main_frame.layout().insertWidget(1, self.expand_widget)
 
     def position_window(self):
         cursor_pos = QCursor.pos()
@@ -516,7 +513,7 @@ class AgentGUI(QWidget):
             text_files = [f for f in self.target_paths if isinstance(f, str) and f.lower().endswith(readable_exts)]
             if len(text_files) == 1:
                 content = tool_read_file(text_files[0])
-                fake_call(content, {'path': text_files}, 'read_file', self.chat_history)
+                fake_call(content, {'path': text_files[0]}, 'read_file', self.chat_history)
 
     def append_log(self, msg, tag=None):
         msg = msg.replace('<', '&lt;').replace('>', '&gt;').replace('\n', '<br>')
@@ -538,6 +535,8 @@ class AgentGUI(QWidget):
         user_input = self.entry.text().strip()
         if not user_input: return
 
+        if self.expand_widget is None:
+            self.setup_conversation_ui()
         if self.expand_widget.isHidden():
             self.expand_widget.show()
             self.resize(600, 500)
@@ -545,23 +544,25 @@ class AgentGUI(QWidget):
         self.entry.clear()
         self.cmd_panel.hide()
         self.append_log(user_input, tag="you")
-        self.chat_history.append(types.Content(role="user", parts=[types.Part(text=user_input)]))
-        if len(self.chat_history) == 1:
-            self.init_context()
-
+        self.chat_history.append({"role": "user", "content": user_input})
+        self.entry.setEnabled(False)
         threading.Thread(target=self.process_ai_loop, daemon=True).start()
 
     def process_ai_loop(self):
         self.signals.log.emit(t("ai_thinking"), None)
-        if self.gemini is None:
-            self.gemini = Gemini(self.target_paths, lambda m, t: self.signals.log.emit(m, t))
         try:
-            response_obj = self.gemini.call(self.chat_history)
+            if len(self.chat_history) == 1:
+                self.init_context()
+            if self.deepseek is None:
+                self.deepseek = DeepSeek(self.target_paths, lambda m, t: self.signals.log.emit(m, t))
+            response_obj = self.deepseek.call(self.chat_history)
             self.signals.response.emit(response_obj)
         except Exception as e:
             self.signals.log.emit(f"API Error: {e}", "error")
+        finally:
+            self.signals.finished.emit()
 
-    def handle_ai_response(self, response: Response):
+    def handle_ai_response(self, response):
         desc, code, lang_type = response.description, response.code, response.lang
         if desc:
             self.append_log(desc, tag="ai")
